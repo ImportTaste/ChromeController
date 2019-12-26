@@ -5,6 +5,7 @@ import logging
 import ast
 import difflib
 import sys
+import pprint
 import os.path
 
 import astor
@@ -25,22 +26,19 @@ class JsonInterfaceGenerator(object):
 
 	"""
 
-	def __init__(self, protocol_version="1.2", debug_prints=False, *args, **kwargs):
+	def __init__(self, protocol_major=1, protocol_minor=2, debug_prints=False, *args, **kwargs):
 		""" init """
 
 		super().__init__(*args, **kwargs)
 
-		if protocol_version == None:
-			protocol_version = "1.2"
-
-		self.log = logging.getLogger("Main.ChromeController.WrapperGenerator")
-
 		self.line_num = 0
+		protocol_major = str(protocol_major)
+		protocol_minor = str(protocol_minor)
 
 		self.do_debug_prints = debug_prints
 
 		self.types = {}
-		self.protocol = self.__load_protocol(protocol_version)
+		self.protocol = self.__load_protocol(protocol_major, protocol_minor)
 
 		self.__build_interface_class()
 
@@ -56,18 +54,17 @@ class JsonInterfaceGenerator(object):
 		return json.loads(protocol_str)
 
 
-	def __load_protocol(self, protocol_version):
+	def __load_protocol(self, major, minor):
 
-		self.log.info("Loading protocol version %s", protocol_version)
-
-		main_json_file = "browser_protocol-r{}.json".format(protocol_version)
-		js_json_file   = "js_protocol-r{}.json"     .format(protocol_version)
+		protocol_rev = "{}.{}".format(major, minor)
+		main_json_file = "browser_protocol-r{}.json".format(protocol_rev)
+		js_json_file = "js_protocol-r{}.json".format(protocol_rev)
 
 		js_file_1 = self.__load_json_file(main_json_file)
 		js_file_2 = self.__load_json_file(js_json_file)
 
-		self.__validate_protocol_version(main_json_file, js_file_1, protocol_version)
-		self.__validate_protocol_version(js_json_file, js_file_2, protocol_version)
+		self.__validate_protocol_version(main_json_file, js_file_1, major, minor)
+		self.__validate_protocol_version(js_json_file, js_file_2, major, minor)
 
 		# assemble the two json files into the single command descriptor file.
 		for domain in js_file_2['domains']:
@@ -80,13 +77,18 @@ class JsonInterfaceGenerator(object):
 		return self.line_num
 
 
-	def __validate_protocol_version(self, filename, js_file, protocol_version):
+	def __validate_protocol_version(self, filename, js_file, major, minor):
+		errm_1 = "Major version mismatch: {} - {} in file {}".format(js_file['version']["major"], major, filename)
+		errm_2 = "Minor version mismatch: {} - {} in file {}".format(js_file['version']["minor"], minor, filename)
 
-		file_protocol_rev = "{}.{}".format(js_file['version']["major"], js_file['version']["minor"])
+		v_1 = js_file['version']["major"]
+		v_2 = js_file['version']["minor"]
 
-		errm_1 = "Version mismatch: {} - {} in file {}".format(file_protocol_rev, protocol_version, filename)
+		assert isinstance(major, str)
+		assert isinstance(minor, str)
 
-		assert file_protocol_rev == protocol_version, errm_1
+		assert v_1 == major, errm_1
+		assert v_2 == minor, errm_2
 
 
 	def __build_interface_class(self):
@@ -121,7 +123,8 @@ class JsonInterfaceGenerator(object):
 		super_func_call = ast.Call(func=ast.Name(id='super', ctx=ast.Load()), args=[], keywords=[])
 		if (sys.version_info[0], sys.version_info[1]) == (3, 5) or \
 			(sys.version_info[0], sys.version_info[1]) == (3, 6) or \
-			(sys.version_info[0], sys.version_info[1]) == (3, 7):
+			(sys.version_info[0], sys.version_info[1]) == (3, 7) or \
+			(sys.version_info[0], sys.version_info[1]) == (3, 8):
 			super_func = ast.Call(
 									func=ast.Attribute(value=super_func_call, attr='__init__', ctx=ast.Load()),
 									args=[ast.Starred(value=ast.Name(id='args', ctx=ast.Load()), ctx=ast.Load())],
@@ -153,6 +156,7 @@ class JsonInterfaceGenerator(object):
 					vararg=ast.arg(arg='args', annotation=None),
 					kwarg=ast.arg(arg='kwargs', annotation=None),
 					varargannotation=None,
+					posonlyargs=[],
 					kwonlyargs=[],
 					kwargannotation=None,
 					defaults=[],
@@ -395,7 +399,8 @@ class JsonInterfaceGenerator(object):
 
 		if (sys.version_info[0], sys.version_info[1]) == (3, 5) or \
 			(sys.version_info[0], sys.version_info[1]) == (3, 6) or \
-			(sys.version_info[0], sys.version_info[1]) == (3, 7):
+			(sys.version_info[0], sys.version_info[1]) == (3, 7) or \
+			(sys.version_info[0], sys.version_info[1]) == (3, 8):
 
 			# More irritating minor semantic differences in the AST between 3.4 and 3.5
 			if func_kwargs:
@@ -438,6 +443,7 @@ class JsonInterfaceGenerator(object):
 					args=args,
 					vararg=None,
 					varargannotation=None,
+					posonlyargs=[],
 					kwonlyargs=[],
 					kwarg=kwarg,
 					kwargannotation=None,
@@ -463,7 +469,10 @@ class JsonInterfaceGenerator(object):
 			self.interface_class,
 		]
 
-		mod = ast.Module(module_components, lineno=self.__get_line(), col_offset=1)
+		if sys.version_info >= (3, 8):
+			mod = ast.Module(module_components, [], lineno=self.__get_line(), col_offset=1)
+		else:
+			mod = ast.Module(module_components, lineno=self.__get_line(), col_offset=1)
 
 		mod = ast.fix_missing_locations(mod)
 
@@ -484,17 +493,17 @@ class JsonInterfaceGenerator(object):
 
 		return built_class
 
-def get_source(protocol_version=None):
-	instance = JsonInterfaceGenerator(protocol_version=protocol_version)
+def get_source():
+	instance = JsonInterfaceGenerator()
 	return instance.dump_class()
 
-def get_class_def(protocol_version=None):
-	instance = JsonInterfaceGenerator(protocol_version=protocol_version)
+def get_class_def():
+	instance = JsonInterfaceGenerator()
 	ret = instance.compile_class()
 	return ret
 
-def get_printed_ast(protocol_version=None):
-	instance = JsonInterfaceGenerator(protocol_version=protocol_version)
+def get_printed_ast():
+	instance = JsonInterfaceGenerator()
 	return instance.dump_ast()
 
 
@@ -508,15 +517,15 @@ def print_file_ast():
 	print("astor.dump_tree(this_ast)")
 	print(astor.dump_tree(this_ast))
 
-def update_generated_class(output_diff, protocolversion="1.2"):
-	log = logging.getLogger("Main.ChromeController.WrapperGenCaller")
+def update_generated_class(force=False, output_diff=False):
+	log = logging.getLogger("Main.ChromeController.WrapperGenerator")
 	gen_filename = "Generated.py"
 	cur_file = os.path.abspath(__file__)
 	cur_dir  = os.path.dirname(cur_file)
 
 	fname = os.path.join(cur_dir, gen_filename)
 
-	cls_def = get_source(protocol_version=protocolversion)
+	cls_def = get_source()
 	try:
 		with open(fname, "r", encoding='utf-8') as fp:
 			have = fp.read()
@@ -525,10 +534,14 @@ def update_generated_class(output_diff, protocolversion="1.2"):
 		have = ""
 
 
-	if have.strip() == cls_def.strip():
+	if have.strip() == cls_def.strip() and not force:
 		log.info("ChromeController wrapper is up to date. Nothing to do")
 	else:
 
+		if not force:
+			log.warning("Generated wrapper appears to be out of date. Regenerating.")
+		else:
+			log.warning("Generated wrapper being force-regenerated")
 		log.warning("Note: If ChromeController is installed as a module, "
 		                 "this may require administrator permissions")
 
@@ -549,46 +562,11 @@ def update_generated_class(output_diff, protocolversion="1.2"):
 			with open(fname, "w", encoding='utf-8') as fp:
 				fp.write(cls_def)
 		except IOError:
-			raise IOError("Could not update class definition file: {}, and "
-			              "it is out of date!".format(fname))
-
-def _save_json(name, json_blob):
-
-	folder = os.path.split(__file__)[0]
-	protocol_file_path = os.path.join(folder, "../", 'protocols', name)
-	protocol_file_path = os.path.abspath(protocol_file_path)
-
-	with open(protocol_file_path, "w") as fp:
-		fp.write(json.dumps(json_blob, indent=4))
-
-
-def fetch_new_protocol():
-	import requests
-	log = logging.getLogger("Main.ChromeController.WrapperGenCaller")
-
-
-	devtools_protocol_url = "https://raw.githubusercontent.com/ChromeDevTools/devtools-protocol/master/json/browser_protocol.json"
-	js_protocol_url       = "https://raw.githubusercontent.com/ChromeDevTools/devtools-protocol/master/json/js_protocol.json"
-
-	devtools_protocol_resp = requests.get(devtools_protocol_url)
-	js_protocol_resp       = requests.get(js_protocol_url)
-
-	devtools_protocol = devtools_protocol_resp.json()
-	js_protocol       = js_protocol_resp.json()
-
-	devtools_protocol['version']['minor'] += "-DEV"
-	js_protocol      ['version']['minor'] += "-DEV"
-
-	main_json_file_name = "browser_protocol-r{}.{}.json".format(devtools_protocol['version']['major'], devtools_protocol['version']['minor'])
-	js_json_file_name   = "js_protocol-r{}.{}.json"     .format(js_protocol['version']['major'],       js_protocol['version']['minor'])
-
-
-	log.info("Saving file %s", main_json_file_name)
-	_save_json(main_json_file_name, devtools_protocol)
-
-	log.info("Saving file %s", js_json_file_name)
-	_save_json(js_json_file_name, js_protocol)
-
+			if force:
+				raise IOError("Could not update class definition file: {}, and "
+				              "it is out of date!".format(fname))
+			else:
+				log.error("Failure updating file '%s'!" % fname)
 
 
 def test():
